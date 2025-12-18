@@ -3,7 +3,7 @@ name: Release Python SDK
 on:
   push:
     tags:
-      - sdk-python-v*
+      - "sdk-python-v*"
 
 permissions:
   contents: read
@@ -13,28 +13,88 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      - name: Resolve Python SDK directory
+        id: python_sdk_dir
+        shell: bash
+        run: |
+          if [[ -f python/pyproject.toml ]]; then
+            echo "dir=python" >> "$GITHUB_OUTPUT"
+          elif [[ -f sdk/python/pyproject.toml ]]; then
+            echo "dir=sdk/python" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not find python/pyproject.toml or sdk/python/pyproject.toml"
+            exit 1
+          fi
+
       - name: Install build tools
         run: |
-          python -m pip install --upgrade pip
-          pip install build twine
+          python -m pip install --upgrade pip build twine
+
+      - name: Validate version matches tag
+        env:
+          SDK_DIR: ${{ steps.python_sdk_dir.outputs.dir }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PREFIX="sdk-python-v"
+          if [[ "$TAG" != ${PREFIX}* ]]; then
+            echo "Unexpected tag: $TAG"
+            exit 1
+          fi
+
+          RELEASE_VERSION="${TAG#$PREFIX}"
+
+          PYPROJECT_VERSION="$(python - <<'PY'
+          import os
+          import re
+          import pathlib
+          sdk_dir = pathlib.Path(os.environ["SDK_DIR"])
+          text = (sdk_dir / "pyproject.toml").read_text(encoding="utf-8")
+          m = re.search(r'(?m)^version\s*=\s*"([^"]+)"\s*$', text)
+          if not m:
+              raise SystemExit(f"Could not find version in {sdk_dir / 'pyproject.toml'}")
+          print(m.group(1))
+          PY
+          )"
+
+          SDK_VERSION="$(python - <<'PY'
+          import os
+          import re
+          import pathlib
+          sdk_dir = pathlib.Path(os.environ["SDK_DIR"])
+          text = (sdk_dir / "src/animus_sdk/_version.py").read_text(encoding="utf-8")
+          m = re.search(r'(?m)^__version__\s*=\s*"([^"]+)"\s*$', text)
+          if not m:
+              raise SystemExit(f"Could not find __version__ in {sdk_dir / 'src/animus_sdk/_version.py'}")
+          print(m.group(1))
+          PY
+          )"
+
+          echo "tag=$RELEASE_VERSION pyproject=$PYPROJECT_VERSION _version.py=$SDK_VERSION"
+
+          if [[ "$RELEASE_VERSION" != "$PYPROJECT_VERSION" ]]; then
+            echo "Tag version does not match ${SDK_DIR}/pyproject.toml version"
+            exit 1
+          fi
+
+          if [[ "$RELEASE_VERSION" != "$SDK_VERSION" ]]; then
+            echo "Tag version does not match ${SDK_DIR}/src/animus_sdk/_version.py __version__"
+            exit 1
+          fi
 
       - name: Build package
-        working-directory: sdk/python
+        working-directory: ${{ steps.python_sdk_dir.outputs.dir }}
         run: |
           python -m build
+          python -m twine check dist/*
 
       - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        working-directory: sdk/python
-        run: |
-          twine upload dist/*
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ steps.python_sdk_dir.outputs.dir }}/dist
+          password: ${{ secrets.PYPI_API_TOKEN }}

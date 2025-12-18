@@ -11,6 +11,12 @@ pip install animus-datalab
 Local development:
 
 ```bash
+pip install -e python
+```
+
+Local development (from the Animus monorepo root):
+
+```bash
 pip install -e sdk/python
 ```
 
